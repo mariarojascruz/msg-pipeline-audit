@@ -30,7 +30,9 @@ import software.amazon.awssdk.services.sns.model.PublishResponse;
  *   Los suscriptores del tópico SNS son los Observers.
  *   Nuevo suscriptor = nueva dirección de email — sin cambiar código.
  *
- * SnsClient: thread-safe, se inicializa estáticamente para warm starts.
+ * SnsClient: thread-safe, se inicializa perezosamente (lazy) usando la
+ * región configurable (app.aws.region / AWS_REGION_NAME), y se reutiliza
+ * entre invocaciones para aprovechar warm starts.
  * =========================================================================
  */
 @Slf4j
@@ -38,16 +40,26 @@ import software.amazon.awssdk.services.sns.model.PublishResponse;
 @Profile("aws")
 public class SnsNotificationAdapter implements NotificationPort {
 
-    private static final SnsClient snsClient;
-
-    static {
-        snsClient = SnsClient.builder()
-                .region(Region.US_EAST_1)
-                .build();
-    }
+    private static volatile SnsClient snsClient;
 
     @Value("${app.aws.sns-topic-arn:}")
     private String snsTopicArn;
+
+    @Value("${app.aws.region:us-east-1}")
+    private String region;
+
+    private SnsClient snsClient() {
+        if (snsClient == null) {
+            synchronized (SnsNotificationAdapter.class) {
+                if (snsClient == null) {
+                    snsClient = SnsClient.builder()
+                            .region(Region.of(region))
+                            .build();
+                }
+            }
+        }
+        return snsClient;
+    }
 
     /**
      * Publica notificación de procesamiento completado en SNS.
@@ -102,7 +114,7 @@ public class SnsNotificationAdapter implements NotificationPort {
                 .message(mensaje)
                 .build();
 
-        PublishResponse response = snsClient.publish(request);
+        PublishResponse response = snsClient().publish(request);
 
         log.info("Notificación SNS publicada [messageId={}] [snsMessageId={}]",
                 auditEvent.getMessageId(), response.messageId());
